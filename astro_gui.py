@@ -36,6 +36,7 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
     QPixmap,
+    QColor,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -106,7 +107,7 @@ def list_tiff_images(folder: Path) -> List[Path]:
     return files
 
 
-def pil_to_qpixmap(path: Path, max_side: int = 4096) -> QPixmap:
+def pil_to_qpixmap(path: Path, max_side: int = 4096, return_meta: bool = False):
     """
     Loads TIFF (or any PIL-readable image) using Pillow and converts to QPixmap.
     Downscales very large images to max_side for smooth GUI work.
@@ -115,6 +116,8 @@ def pil_to_qpixmap(path: Path, max_side: int = 4096) -> QPixmap:
         raise RuntimeError("Pillow (PIL) is required to load TIFF reliably. Install: pip install pillow")
 
     img = Image.open(path)
+
+    orig_w, orig_h = img.size
 
     # Some TIFFs are multi-page; show first page by default.
     try:
@@ -138,7 +141,14 @@ def pil_to_qpixmap(path: Path, max_side: int = 4096) -> QPixmap:
     data = img.tobytes("raw", "RGB")
     bytes_per_line = 3 * w
     qimg = QImage(data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
-    return QPixmap.fromImage(qimg)
+    pix = QPixmap.fromImage(qimg)
+
+    if return_meta:
+        sx = 1.0 if orig_w <= 0 else (w / float(orig_w))
+        sy = 1.0 if orig_h <= 0 else (h / float(orig_h))
+        return pix, (sx, sy)
+
+    return pix
 
 
 class SpinnerWidget(QWidget):
@@ -563,10 +573,16 @@ class CrosshairImageView(QGraphicsView):
         self._vline = QGraphicsLineItem()
         self._hline = QGraphicsLineItem()
 
-        pen = QPen(self.palette().highlight().color())
+        # Make crosshair always visible above the image.
+        # Keep a thin cosmetic pen but ensure it draws on top (z-value).
+        c = QColor(self.palette().highlight().color())
+        c.setAlpha(220)
+        pen = QPen(c)
         pen.setWidth(0)  # cosmetic
         self._vline.setPen(pen)
         self._hline.setPen(pen)
+        self._vline.setZValue(10)
+        self._hline.setZValue(10)
 
         self._scene.addItem(self._vline)
         self._scene.addItem(self._hline)
@@ -596,6 +612,9 @@ class CrosshairImageView(QGraphicsView):
         self.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
         self._vline.show()
         self._hline.show()
+        # Put crosshair to the center by default so it is visible immediately.
+        rect = self._pixmap_item.boundingRect()
+        self.set_crosshair(rect.center().x(), rect.center().y(), emit=False)
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
@@ -610,18 +629,26 @@ class CrosshairImageView(QGraphicsView):
         pos = self.mapToScene(event.position().toPoint())
         rect = self._pixmap_item.boundingRect()
 
-        x = pos.x()
-        y = pos.y()
+        self.set_crosshair(pos.x(), pos.y())
+
+    def set_crosshair(self, x: float, y: float, emit: bool = True) -> None:
+        """Set crosshair position in *image (scene) coordinates*."""
+        if not self._pixmap_item:
+            return
+
+        rect = self._pixmap_item.boundingRect()
 
         # Clamp to image bounds
-        x = min(max(x, rect.left()), rect.right())
-        y = min(max(y, rect.top()), rect.bottom())
+        xx = min(max(float(x), rect.left()), rect.right())
+        yy = min(max(float(y), rect.top()), rect.bottom())
 
-        self._vline.setLine(x, rect.top(), x, rect.bottom())
-        self._hline.setLine(rect.left(), y, rect.right(), y)
+        self._vline.setLine(xx, rect.top(), xx, rect.bottom())
+        self._hline.setLine(rect.left(), yy, rect.right(), yy)
+        self._vline.show()
+        self._hline.show()
 
-        if self._on_coords:
-            self._on_coords(int(x), int(y))
+        if emit and self._on_coords:
+            self._on_coords(int(xx), int(yy))
 
 
 @dataclass
@@ -643,6 +670,8 @@ class MainWindow(QMainWindow):
         self._current_images: List[Path] = []
         self._df = None
         self._last_dir: Optional[Path] = None
+        self._shown_image: Optional[str] = None
+        self._shown_scale: Tuple[float, float] = (1.0, 1.0)
 
         self._build_ui()
 
@@ -713,6 +742,7 @@ class MainWindow(QMainWindow):
         self.table = QTableView()
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
+        self.table.clicked.connect(self.on_table_row_clicked)
 
         self.image_view = CrosshairImageView()
         self.image_view.set_on_coords(self._update_coords)
@@ -896,6 +926,8 @@ class MainWindow(QMainWindow):
         self.proxy.clear_filters()
         self.proxy.set_image_filter(None)
         self.image_view.clear()
+        self._shown_image = None
+        self._shown_scale = (1.0, 1.0)
         self._append_log("\n=== Запуск анализа ===")
 
         # Prepare process
@@ -1009,19 +1041,94 @@ class MainWindow(QMainWindow):
             # All images
             self.proxy.set_image_filter(None)
             self.image_view.clear()
+            self._shown_image = None
+            self._shown_scale = (1.0, 1.0)
             return
 
         path = Path(str(data))
         # Show image
         try:
-            pix = pil_to_qpixmap(path)
+            pix, scale = pil_to_qpixmap(path, return_meta=True)
         except Exception as e:
             QMessageBox.warning(self, "Ошибка изображения", f"Не удалось загрузить изображение:\n{e}")
             return
         self.image_view.set_pixmap(pix)
+        self._shown_image = path.name
+        self._shown_scale = scale
 
         # Filter table by this image (by basename, matches core output column "image")
         self.proxy.set_image_filter(path.name)
+
+    def _source_col_index(self, name: str) -> Optional[int]:
+        m = self.proxy.sourceModel()
+        if m is None:
+            return None
+        for c in range(m.columnCount()):
+            h = m.headerData(c, Qt.Horizontal, Qt.DisplayRole)
+            if str(h) == name:
+                return c
+        return None
+
+    def _show_image_for_basename(self, basename: str) -> None:
+        # Find image path among loaded inputs
+        p: Optional[Path] = None
+        for cand in self._current_images:
+            if cand.name == basename:
+                p = cand
+                break
+        if p is None:
+            return
+        try:
+            pix, scale = pil_to_qpixmap(p, return_meta=True)
+        except Exception:
+            return
+        self.image_view.set_pixmap(pix)
+        self._shown_image = p.name
+        self._shown_scale = scale
+
+    def on_table_row_clicked(self, index: QModelIndex) -> None:
+        """When a row is clicked, move crosshair to (x,y) from the table."""
+        if not index.isValid():
+            return
+        src_model = self.proxy.sourceModel()
+        if src_model is None:
+            return
+        src_index = self.proxy.mapToSource(index)
+        row = src_index.row()
+
+        col_x = self._source_col_index("x")
+        col_y = self._source_col_index("y")
+        col_img = self._source_col_index("image")
+        if col_x is None or col_y is None:
+            return
+
+        # Extract values (prefer raw via UserRole)
+        idx_x = src_model.index(row, col_x)
+        idx_y = src_model.index(row, col_y)
+        vx = src_model.data(idx_x, Qt.UserRole)
+        vy = src_model.data(idx_y, Qt.UserRole)
+        if vx is None:
+            vx = src_model.data(idx_x, Qt.DisplayRole)
+        if vy is None:
+            vy = src_model.data(idx_y, Qt.DisplayRole)
+
+        fx = _to_float(vx)
+        fy = _to_float(vy)
+        if fx is None or fy is None:
+            return
+
+        img_name = ""
+        if col_img is not None:
+            idx_img = src_model.index(row, col_img)
+            img_name = str(src_model.data(idx_img, Qt.DisplayRole) or "")
+
+        # If the clicked row belongs to another image, show it (do NOT change filters/list selection).
+        if img_name and img_name != (self._shown_image or ""):
+            self._show_image_for_basename(img_name)
+
+        # Convert analyzer coords (original pixels) to displayed pixmap coords (if image was downscaled).
+        sx, sy = self._shown_scale
+        self.image_view.set_crosshair(fx * sx, fy * sy)
 
 
 def main() -> None:

@@ -233,7 +233,6 @@ def run_pipeline(image_paths, tile_size=512, output_csv="objects_stats.csv",
 
     assign_brightness_classes(all_objects)
     df = pd.DataFrame(all_objects)
-    df = df.drop(columns=["tile_index", "label"], errors="ignore")
     df.to_csv(output_csv, index=False)
     return df
 
