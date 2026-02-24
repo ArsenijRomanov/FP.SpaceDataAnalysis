@@ -660,7 +660,7 @@ class AnalysisConfig:
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Astro Analyzer — GUI")
+        self.setWindowTitle("Astro Analyzer")
         self.resize(1400, 820)
 
         self._project_dir = Path(__file__).resolve().parent

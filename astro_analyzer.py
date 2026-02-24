@@ -277,8 +277,6 @@ def main():
     )
 
     print("Найдено объектов:", len(df))
-    print("Первые строки таблицы:")
-    print(df.head())
 
 
 if __name__ == "__main__":
