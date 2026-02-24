@@ -72,21 +72,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# Hide noisy runtime warnings in the GUI process.
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-# Lines matching this regex will be dropped from the GUI log (to remove noisy warnings).
 _LOG_DROP_RE = re.compile(
     r"(DeprecationWarning|FutureWarning|UserWarning|RuntimeWarning):|^\s*WARNING\b",
     re.IGNORECASE,
 )
 
-# Optional deps (for robust TIFF load)
 try:
-    from PIL import Image  # type: ignore
+    from PIL import Image
 except Exception:
-    Image = None  # noqa: N816
+    Image = None
 
 
 SUPPORTED_EXTS = {".tif", ".tiff", ".TIF", ".TIFF"}
@@ -119,17 +116,14 @@ def pil_to_qpixmap(path: Path, max_side: int = 4096, return_meta: bool = False):
 
     orig_w, orig_h = img.size
 
-    # Some TIFFs are multi-page; show first page by default.
     try:
         img.seek(0)
     except Exception:
         pass
 
-    # Convert to RGB for simpler display
     if img.mode not in ("RGB", "L"):
         img = img.convert("RGB")
     elif img.mode == "L":
-        # grayscale -> RGB to draw nicely
         img = img.convert("RGB")
 
     w, h = img.size
@@ -190,7 +184,6 @@ class SpinnerWidget(QWidget):
         cy = self.height() / 2
         radius = min(self.width(), self.height()) / 2 - 2
 
-        # Draw 12 ticks with fading alpha
         for i in range(12):
             alpha = int(255 * (i + 1) / 12)
             pen = QPen(self.palette().windowText().color())
@@ -1056,7 +1049,6 @@ class MainWindow(QMainWindow):
         self._shown_image = path.name
         self._shown_scale = scale
 
-        # Filter table by this image (by basename, matches core output column "image")
         self.proxy.set_image_filter(path.name)
 
     def _source_col_index(self, name: str) -> Optional[int]:
@@ -1070,7 +1062,6 @@ class MainWindow(QMainWindow):
         return None
 
     def _show_image_for_basename(self, basename: str) -> None:
-        # Find image path among loaded inputs
         p: Optional[Path] = None
         for cand in self._current_images:
             if cand.name == basename:
@@ -1122,11 +1113,9 @@ class MainWindow(QMainWindow):
             idx_img = src_model.index(row, col_img)
             img_name = str(src_model.data(idx_img, Qt.DisplayRole) or "")
 
-        # If the clicked row belongs to another image, show it (do NOT change filters/list selection).
         if img_name and img_name != (self._shown_image or ""):
             self._show_image_for_basename(img_name)
 
-        # Convert analyzer coords (original pixels) to displayed pixmap coords (if image was downscaled).
         sx, sy = self._shown_scale
         self.image_view.set_crosshair(fx * sx, fy * sy)
 
